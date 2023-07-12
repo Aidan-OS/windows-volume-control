@@ -3,15 +3,15 @@ use windows::{
     core::Interface,
     Win32::{
         Media::Audio::{
-            eMultimedia, eRender, Endpoints::IAudioEndpointVolume, IAudioSessionControl,
+            eRender, Endpoints::IAudioEndpointVolume, IAudioSessionControl,
             IAudioSessionControl2, IAudioSessionEnumerator, IAudioSessionManager2, IMMDevice,
             IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
         },
         System::{
-            Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CLSCTX_ALL, COINIT_APARTMENTTHREADED},
+            Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CLSCTX_ALL, COINIT_APARTMENTTHREADED, StructuredStorage::PROPVARIANT, STGM_READ},
             ProcessStatus::K32GetProcessImageFileNameA,
             Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-        },
+        }, UI::Shell::PropertiesSystem::{PROPERTYKEY, PropVariantToStringAlloc},
     },
 };
 use std::process::exit;
@@ -19,9 +19,15 @@ use std::process::exit;
 mod session;
 
 pub struct AudioController {
-    default_device: Option<IMMDevice>,
     imm_device_enumerator: Option<IMMDeviceEnumerator>,
-    sessions: Vec<Box<dyn Session>>,
+    pub audio_devices: Vec<AudioDevice>
+}
+
+pub struct AudioDevice {
+    manufacturer: String,
+    device_name: String,
+    device: IMMDevice,
+    sessions: Vec<Box<dyn Session>>
 }
 
 pub enum CoinitMode {
@@ -44,12 +50,11 @@ impl AudioController {
         });
 
         Self {
-            default_device: None,
             imm_device_enumerator: None,
-            sessions: vec![],
+            audio_devices: Vec::new()
         }
     }
-    pub unsafe fn GetSessions(&mut self) {
+    pub unsafe fn load_devices(&mut self) {
         self.imm_device_enumerator = Some(
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_INPROC_SERVER).unwrap_or_else(
                 |err| {
@@ -58,50 +63,64 @@ impl AudioController {
                 },
             ),
         );
+
+        // Loading the registry property keys for the names and manufacturers for audio devices.
+        let device_name_property: *const PROPERTYKEY = &PROPERTYKEY { fmtid:windows::core::GUID::from("a45c254e-df1c-4efd-8020-67d146a850e0"), pid: 2 } as *const PROPERTYKEY;
+        let device_manufacturer_property: *const PROPERTYKEY = &PROPERTYKEY { fmtid: windows::core::GUID::from("b3f8fa53-0004-438e-9003-51a46e139bfc"), pid: 6 } as *const PROPERTYKEY;
+
+        // Loop through all active audio devices
+        let active_audio_device_count: u32 = self.imm_device_enumerator.clone().unwrap().EnumAudioEndpoints(eRender, 1).unwrap().GetCount().unwrap();
+        for device in 0..active_audio_device_count {
+            let imm_audio_device: IMMDevice = self.imm_device_enumerator.clone().unwrap().EnumAudioEndpoints(eRender, 1).unwrap().Item(device).unwrap();
+
+            // Get the registry properties for naming the device
+            let manufacturer_property_variant: *mut PROPVARIANT = &mut imm_audio_device.OpenPropertyStore(STGM_READ).unwrap().GetValue(device_manufacturer_property).unwrap();
+            let manufacturer_name: String = PropVariantToStringAlloc(manufacturer_property_variant).unwrap().to_string().unwrap();
+
+            let device_name_property_variant: *mut PROPVARIANT = &mut imm_audio_device.OpenPropertyStore(STGM_READ).unwrap().GetValue(device_name_property).unwrap();
+            let device_name: String = PropVariantToStringAlloc(device_name_property_variant).unwrap().to_string().unwrap();
+
+            // Create the device structure and add it to the list of devices
+            let audio_device: AudioDevice = AudioDevice { manufacturer: (manufacturer_name), device_name: (device_name), device: (imm_audio_device.clone()), sessions: Vec::new() };
+
+            self.audio_devices.push(audio_device);
+        }
     }
 
-    pub unsafe fn GetDefaultAudioEnpointVolumeControl(&mut self) {
-        if self.imm_device_enumerator.is_none() {
-            eprintln!("ERROR: Function called before creating enumerator");
-            return;
+    pub unsafe fn load_all_sessions(mut self) -> AudioController
+    {
+        let mut new_audio_devices: Vec<AudioDevice> = Vec::new();
+        for audio_device in self.audio_devices {
+            let new_audio_device = Self::load_sessions(audio_device);
+            new_audio_devices.push(new_audio_device)
         }
 
-        self.default_device = Some(
-            self.imm_device_enumerator
-                .clone()
-                .unwrap()
-                .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .unwrap_or_else(|err| {
-                    eprintln!("ERROR: Couldn't get Default audio endpoint {err}");
-                    exit(1);
-                }),
-        );
-        let simple_audio_volume: IAudioEndpointVolume = self
-            .default_device
+        self.audio_devices = new_audio_devices;
+        return self
+    }
+
+    // Loads all of the sesssions for a given AudioDevice
+    pub unsafe fn load_sessions(mut audio_device:AudioDevice) -> AudioDevice
+    {
+        // Getting master volume
+        let simple_audio_volume: IAudioEndpointVolume = audio_device.device
             .clone()
-            .unwrap()
             .Activate(CLSCTX_ALL, None)
-            .unwrap_or_else(|err| {
+            .unwrap_or_else(|err|{
                 eprintln!("ERROR: Couldn't get Endpoint volume control: {err}");
                 exit(1);
             });
 
-        self.sessions.push(Box::new(EndPointSession::new(
-            simple_audio_volume,
-            "master".to_string(),
-        )));
-    }
+        audio_device.sessions.push(Box::new(EndPointSession::new(simple_audio_volume, "master".to_string())));
 
-    pub unsafe fn GetAllProcessSessions(&mut self) {
-        if self.default_device.is_none() {
-            eprintln!("ERROR: Default device hasn't been initialized so the cant find the audio processes...");
-            return;
-        }
-
-        let session_manager2: IAudioSessionManager2 = self.default_device.as_ref().unwrap().Activate(CLSCTX_INPROC_SERVER, None).unwrap_or_else(|err| {
-            eprintln!("ERROR: Couldnt get AudioSessionManager for enumerating over processes... {err}");
-            exit(1);
-        });
+        // Getting program volumes
+        let session_manager2: IAudioSessionManager2 = audio_device.device
+            .clone()
+            .Activate(CLSCTX_INPROC_SERVER, None)
+            .unwrap_or_else(|err| {
+                eprintln!("ERROR: Couldnt get AudioSessionManager for enumerating over processes... {err}");
+                exit(1);
+            });
 
         let session_enumerator: IAudioSessionEnumerator = session_manager2
             .GetSessionEnumerator()
@@ -168,15 +187,31 @@ impl AudioController {
                 }
             };
             let application_session = ApplicationSession::new(audio_control, str_filename);
-            self.sessions.push(Box::new(application_session));
+            audio_device.sessions.push(Box::new(application_session));
         }
+
+        return audio_device;
+        
     }
 
+    pub unsafe fn get_all_audio_device_names(&self) -> Vec<String> {
+        self.audio_devices.iter().map(|i| i.get_name()).collect()
+    }
+
+}
+
+impl AudioDevice{
     pub unsafe fn get_all_session_names(&self) -> Vec<String> {
-        self.sessions.iter().map(|i| i.getName()).collect()
+        self.sessions.iter().map(|i| i.get_name()).collect()
     }
 
     pub unsafe fn get_session_by_name(&self, name: String) -> Option<&Box<dyn Session>> {
-        self.sessions.iter().find(|i| i.getName() == name)
+        self.sessions.iter().find(|i| i.get_name() == name)
+    }
+
+    pub unsafe fn get_name(&self) -> String {
+        let seperator = " - ".to_string();
+        return self.manufacturer.clone() + &seperator + &self.device_name.clone();
+        
     }
 }

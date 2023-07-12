@@ -16,7 +16,7 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeChangeCallback {
 fn main() {
     unsafe {
         let mut controller = AudioController::init(None);
-        controller.GetSessions();
+        controller.load_devices();
         controller.GetDefaultAudioEnpointVolumeControl();
         controller.GetAllProcessSessions();
 
