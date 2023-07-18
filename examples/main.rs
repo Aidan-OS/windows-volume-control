@@ -135,19 +135,19 @@ fn main() {
                         break;
                     }
 
-                    let selection: f32 = line.trim().parse()
+                    let selection: i32 = line.trim().parse()
                         .unwrap_or_else(|err|{
                             println!("Not a number: {err}");
-                            -1.0
+                            -1
                         });
                     
-                    if selection < 0.0 || selection > 100.0
+                    if selection < 0 || selection > 100
                     {
                         println!("Invalid input. Please input a number between 0.0 and 100.0");
                         continue;
                     }
 
-                    selected_session.clone().unwrap().set_volume(selection);
+                    selected_session.clone().unwrap().set_volume(selection as f32 / 100.0);  //Inputs into the function must be between 0 and 1
                     println!("Volume has been set to {:?}", selection);
                     selected_session = None;
                     state = 1;
