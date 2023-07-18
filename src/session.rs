@@ -4,6 +4,7 @@ use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::ISimpleAudioVolume;
 
 use std::process::exit;
+
 pub trait Session {
     unsafe fn get_audio_endpoint_volume(&self) -> Option<IAudioEndpointVolume>;
     unsafe fn get_name(&self) -> String;
@@ -13,6 +14,7 @@ pub trait Session {
     unsafe fn set_mute(&self, mute: bool);
 }
 
+#[derive(Clone)]
 pub struct EndPointSession {
     simple_audio_volume: IAudioEndpointVolume,
     name: String,
@@ -74,6 +76,7 @@ impl Session for EndPointSession {
     }
 }
 
+#[derive(Clone)]
 pub struct ApplicationSession {
     simple_audio_volume: ISimpleAudioVolume,
     name: String,

@@ -1,4 +1,4 @@
-use session::{ApplicationSession, EndPointSession, Session};
+pub use session::{ApplicationSession, EndPointSession, Session};
 use windows::{
     core::Interface,
     Win32::{
@@ -14,20 +14,22 @@ use windows::{
         }, UI::Shell::PropertiesSystem::{PROPERTYKEY, PropVariantToStringAlloc},
     },
 };
-use std::process::exit;
+use std::{process::exit, sync::Arc};
 
 mod session;
 
+#[derive(Clone)]
 pub struct AudioController {
     imm_device_enumerator: Option<IMMDeviceEnumerator>,
     pub audio_devices: Vec<AudioDevice>
 }
 
+#[derive(Clone)]
 pub struct AudioDevice {
     manufacturer: String,
     device_name: String,
     device: IMMDevice,
-    sessions: Vec<Box<dyn Session>>
+    pub sessions: Vec<Arc<dyn Session>>
 }
 
 pub enum CoinitMode {
@@ -69,6 +71,7 @@ impl AudioController {
         let device_manufacturer_property: *const PROPERTYKEY = &PROPERTYKEY { fmtid: windows::core::GUID::from("b3f8fa53-0004-438e-9003-51a46e139bfc"), pid: 6 } as *const PROPERTYKEY;
 
         // Loop through all active audio devices
+        // TODO all unwraps need to be unwarp_or_else
         let active_audio_device_count: u32 = self.imm_device_enumerator.clone().unwrap().EnumAudioEndpoints(eRender, 1).unwrap().GetCount().unwrap();
         for device in 0..active_audio_device_count {
             let imm_audio_device: IMMDevice = self.imm_device_enumerator.clone().unwrap().EnumAudioEndpoints(eRender, 1).unwrap().Item(device).unwrap();
@@ -111,7 +114,7 @@ impl AudioController {
                 exit(1);
             });
 
-        audio_device.sessions.push(Box::new(EndPointSession::new(simple_audio_volume, "master".to_string())));
+        audio_device.sessions.push(Arc::new(EndPointSession::new(simple_audio_volume, "master".to_string())));
 
         // Getting program volumes
         let session_manager2: IAudioSessionManager2 = audio_device.device
@@ -187,7 +190,7 @@ impl AudioController {
                 }
             };
             let application_session = ApplicationSession::new(audio_control, str_filename);
-            audio_device.sessions.push(Box::new(application_session));
+            audio_device.sessions.push(Arc::new(application_session));
         }
 
         return audio_device;
@@ -205,7 +208,7 @@ impl AudioDevice{
         self.sessions.iter().map(|i| i.get_name()).collect()
     }
 
-    pub unsafe fn get_session_by_name(&self, name: String) -> Option<&Box<dyn Session>> {
+    pub unsafe fn get_session_by_name(&self, name: String) -> Option<&Arc<dyn Session>> {
         self.sessions.iter().find(|i| i.get_name() == name)
     }
 
